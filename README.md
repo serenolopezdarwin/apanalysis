@@ -4,10 +4,7 @@ This repository is intended to accompany our publication, primarily to enhance t
 
 Agarwal* V, Lopez-Darwin* S., Kelley D., Shendure J. [The landscape of alternative polyadenylation in single cells of the developing mouse embryo](https://www.biorxiv.org/content/10.1101/2021.01.21.427498v2). _bioRxiv_. *Equal contribution.
 
-
-This pipeline can be used on sci-rna-seq datasets in BAM format in order to quantify and plot 3'UTR usage at up to single-cell and single-gene resolution.
-
-If you find our code or predictions to be helpful for your work, please cite the paper above.
+This pipeline can be used on scRNA-seq datasets in BAM format in order to quantify and plot 3' UTR usage at up to single-cell and single-gene resolution. If you find our code or predictions to be helpful for your work, please cite the paper above.
 
 
 # Dependencies for running entire pipeline:
@@ -18,7 +15,6 @@ If you find our code or predictions to be helpful for your work, please cite the
 * [BEDTools](https://github.com/arq5x/bedtools2/releases)
 
 # Instructions for use
-
 
 Users are advised to read the code closely and modify commented pieces as appropriate to acquire
 desired output for your environment. For example, you will need to download all of the additional
