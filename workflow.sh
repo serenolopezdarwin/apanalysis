@@ -29,8 +29,7 @@
 # 1. bedtools
 # 2. gtf2bed
 # 3. sge
-# 4. dreme
-# 5. bedops
+# 4. bedops
 
 
 # If no dataset is entered, everything is directed to the 'default' dataset folder.
@@ -266,23 +265,6 @@ $pythonpath ${scriptpath}matrixlengthandisoformanalysis.py $dataset $PWD
 
 # It is faster to do this here than in the python script
 cat $dataset/tsv/*.tsv > $dataset/cell_data.tsv
-
-# This generates a dreme motif analysis of a sample of our data, based on whether it overlaps a PAS or not.
-# dremepath=/net/gs/vol3/software/modules-sw/meme/4.12.0/Linux/RHEL6/x86_64/bin/dreme-py3
-# gunzip data/overlapfiles/utr_overlaps_255.bed.gz
-# cat data/overlapfiles/utr_overlaps_255.bed | \
-# awk 'BEGIN{OFS=FS="\t"}{ if ($6=="+") {$3=$2+110;$2=$3-200} else {$2=$3-100;$2=$3+200}} \
-# {print $1, $2, $3, $4, $5, $6}' | shuf -n 10000 | sort > utroverlap.temp.bed
-# cat data/pasoverlaps/utr_overlaps_255.bed | \
-# awk 'BEGIN{OFS=FS="\t"}{ if ($6=="+") {$3=$2+110;$2=$3-200} else {$2=$3-100;$3=$2+200}} \
-# {print $1, $2, $3, $4, $5, $6}' | shuf -n 10000 | sort > pasoverlap.temp.bed
-# comm -23 utroverlap.temp.bed pasoverlap.temp.bed > no_pas.temp.bed
-# gzip data/overlapfiles/utr_overlaps_255.bed
-# bedtools getfasta -fi mm10.fa -bed no_pas.temp.bed -s -fo no_pas.temp.fa
-# bedtools getfasta -fi mm10.fa -bed pasoverlap.temp.bed -s -fo pasoverlap.temp.fa
-# python $dremepath -oc dreme_nopas/ -m 5 -p no_pas.temp.fa
-# python $dreampath -oc dreme_pas/ -m 5 -p pasoverlap.temp.fa
-
 # This will submit 100 parallel jobs to analyze differential PAS usage.
 jobfile='/net/shendure/vol1/home/sereno/projects/scripts/pasanalysis_workflow.sh'
 sed -i "4s|.*|dataset=\"$dataset\"|" $jobfile
