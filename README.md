@@ -2,7 +2,7 @@
 
 This repository is intended to accompany our publication, primarily to enhance the reproducibility of our results. For more information please refer to:
 
-Agarwal V, Lopez-Darwin S., Kelley D., Shendure J. [The landscape of alternative polyadenylation in single cells of the developing mouse embryo.](https://www.biorxiv.org/content/10.1101/2021.01.21.427498v1)
+Agarwal V, Lopez-Darwin S., Kelley D., Shendure J. [The landscape of alternative polyadenylation in single cells of the developing mouse embryo.](https://www.biorxiv.org/content/10.1101/2021.01.21.427498v2). _bioRxiv_.
 
 
 This pipeline can be used on sci-rna-seq datasets in BAM format in order to quantify and plot 3'UTR usage at up to single-cell and single-gene resolution.
@@ -14,10 +14,6 @@ If you find our code or predictions to be helpful for your work, please cite the
 * Python3 modules: glob2, h5py, matplotlib, numpy, pandas, pylab, scipy, seaborn, subprocess, matplotlib_venn, statsmodels
 
 * R libraries: ggplot2, ggseqlogo, gplots, LSD, pheatmap, plotly, plyr, dplyr, processx, RColorBrewer, reshape2, viridis
-
-* [The MEME Suite](http://meme-suite.org/doc/download.html?man_type=web)
-
-* [UCSC tools](http://hgdownload.soe.ucsc.edu/downloads.html#source_downloads) installation
 
 * [BEDTools](https://github.com/arq5x/bedtools2/releases)
 
