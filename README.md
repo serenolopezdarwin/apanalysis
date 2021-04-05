@@ -8,7 +8,7 @@ This pipeline can be used on scRNA-seq datasets in BAM format in order to quanti
 
 
 # Dependencies for running entire pipeline:
-* Python3 modules: glob2, h5py, matplotlib, numpy, pandas, pylab, scipy, seaborn, subprocess, matplotlib_venn, statsmodels
+* Python3 modules: glob2, h5py, matplotlib, numpy, pandas, pylab, scipy, seaborn (>=0.11.1), subprocess, matplotlib_venn (>=0.6), statsmodels (>=0.12.2)
 
 * R libraries: ggplot2, ggseqlogo, gplots, LSD, pheatmap, plotly, plyr, dplyr, processx, RColorBrewer, reshape2, viridis
 
