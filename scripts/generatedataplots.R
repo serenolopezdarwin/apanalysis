@@ -264,6 +264,75 @@ legend('left', legend=unique(gsub("\\..*","",rownames(fixed.stats))), fill=uniqu
 dev.off()
 
 
+## Calculates and plots correlation between heatmap cell counts and values.
+neuronal.clusters <- c('Cholinergic_neurons', 'Inhibitory_interneurons', 'Granule_neurons',
+'Sensory_neurons', 'Excitatory_neurons', 'Inhibitory_neurons', 'Inhibitory_neuron_progenitors',
+'Postmitotic_premature_neurons')
+blood.clusters <- c('Primitive_erythroid_lineage', 'Definitive_erythroid_lineage', 'White_blood_cells')
+split.stats <- ldply(split.data, function(sublist){
+	subframe <- data.frame(sublist)
+	frame.median <- median(subframe[,16])
+	frame.counts <- length(subframe[,16])
+	frame.cluster <- subframe[1,1]
+	frame.age <- subframe[1,15]
+	if (frame.cluster %in% neuronal.clusters) {
+		frame.color <- "red"
+	}
+	else if (frame.cluster %in% blood.clusters) {
+		frame.color <- "blue"
+	}
+	else {
+		frame.color <- "black"
+	}
+	data.frame(frame.median, frame.counts, frame.color, frame.age)
+	})
+split.medians <- split.stats$frame.median
+split.counts <- split.stats$frame.counts
+split.colors <- as.character(split.stats$frame.color)
+split.ages <- split.stats$frame.age
+# Evaluates to 0.030
+print("Heatmap count pearson:")
+print(cor(split.counts, split.medians, method="pearson"))
+# Evaluates to .00048
+print("Heatmap count spearman:")
+print(cor(split.counts, split.medians, method="spearman"))
+pdf(paste0(dataset, "/figures/cluster_count_vs_utr.pdf"))
+plot(split.counts, split.medians, main="", xlab="", ylab="", pch=19, col=split.colors)
+title(main="Cluster & Age Cell Count vs UTR Deviation", xlab="Cell Count", ylab="Deviation From Mean UTR")
+dev.off()
+# P-value evaluates to 7.9*10^-15
+split.aov <- aov(frame.median ~ frame.age, data=split.stats)
+
+
+## Performs analysis of variance test on each heatmap row for cells within age categories.
+cluster.split.data <- split(data, data$cluster, drop=TRUE)
+c.split.stats <- ldply(cluster.split.data, function(sublist){
+	subframe <- data.frame(sublist)
+	frame.counts <- length(subframe[,16])
+	frame.cluster <- subframe[1,1]
+	frame.aov <- aov(utr ~ age, data=subframe)
+	frame.pvalue <- summary(frame.aov)[[1]][["Pr(>F)"]][1]
+	data.frame(frame.cluster, frame.pvalue, frame.counts)
+	})
+adjusted.values = p.adjust(c.split.stats$frame.pvalue, method="bonferroni")
+# Gives bonferroni-corrected values for each cluster.
+c.split.stats$adjusted.pvalue <-adjusted.values
+
+
+## Does the same as above with trajectory rows rather than cluster rows.
+traj.split.data <- split(data, data$trajectory, drop=TRUE)
+t.split.stats <- ldply(traj.split.data, function(sublist){
+	subframe <- data.frame(sublist)
+	frame.counts <- length(subframe[,16])
+	frame.cluster <- subframe[1,1]
+	frame.aov <- aov(utr ~ age, data=subframe)
+	frame.pvalue <- summary(frame.aov)[[1]][["Pr(>F)"]][1]
+	data.frame(frame.cluster, frame.pvalue, frame.counts)
+	})
+adjusted.values = p.adjust(t.split.stats$frame.pvalue, method="bonferroni")
+t.split.stats$adjusted.pvalue <-adjusted.values
+
+
 ## Generates 3D UMAP plots of our data.
 umap.data <- read.table(binned.umap.in.path)
 names(umap.data) <- c("umap1", "umap2", "umap3", "utr", "traj", "age")
