@@ -22,7 +22,7 @@ data <- read.table(data.in.path)
 colnames(data) <- c("cluster", "tsne1", "tsne2", "subcluster", "stsne1", "stsne2", 
 	                "trajectory", "umap1", "umap2", "umap3", "straj", "rumap1", "rumap2", "rumap3", 
 	                "age", "utr", "clusterutr", "trajectoryutr", "strajutr", "ageutr",
-	                "cellutr1", "cellutr2", "geneutr3", "geneutr4", "ratio", "pseudotime")
+	                "cellutr1", "cellutr2", "geneutr3", "geneutr4", "ratio", "pseudotime", "count")
 data <- data[!is.na(data$utr),]
 gene.stats.in.path <- paste0(dataset, "/gene_stats.txt")
 binned.umap.in.path <- paste0(dataset, "/binned_umap_data.txt")
@@ -48,6 +48,17 @@ a <- ggplot(data=df, aes(x=filter, y=reads, group=1)) +
 gene.stats.out.path <- paste0(dataset, "/figures/gene_stats_", dataset, ".pdf")
 ggsave(filename=gene.stats.out.path, plot=a, width=5, height=5, limitsize=FALSE)
 
+## Generates a plot of cell read counts vs cell utr deviation for each cell.
+pdf(paste0(dataset, "/figures/expr_vs_utr.pdf"))
+heatscatter(data$count, data$utr, main="", xlab="", ylab="", ylim=c(-1000,1000))
+title(main="Cell UMIs vs Mean UTR Deviation", xlab="UMIs", ylab="Mean UTR Deviation")
+dev.off()
+# Evaluates to -0.04366728
+print("UMI vs UTR Spearman:")
+print(cor(data$count, data$utr, method='spearman'))
+# Evaluates to -0.04362961
+print("UMI vs UTR Pearson:")
+print(cor(data$count, data$utr, method='pearson'))
 
 ## Makes plots comparing gene expression data at various rounds of filtration and with the baseline.
 # Reads in gene expression and count data.
@@ -97,6 +108,15 @@ lines(idxs, round(unlist(
                               } )), 3), 
 	  col='blue', lwd=2, ylim=c(0,0.8))
 dev.off()
+print("Unfiltered Spearman:")
+print(cor(exp.data$baseline, exp.data$original, method="spearman"))
+print("Filtered Spearman:")
+print(cor(exp.data$baseline, exp.data$pas, method="spearman"))
+print("Unfiltered Pearson:")
+print(cor(exp.data$baseline, exp.data$original, method="pearson"))
+print("Filtered Pearson:")
+print(cor(exp.data$baseline, exp.data$pas, method="pearson"))
+
 
 
 ## Plots dreme data
@@ -202,7 +222,12 @@ split.stats <- ldply(split.data, function(sublist){
 	subframe <- data.frame(sublist)
 	frame.cluster <- subframe[1,1]
 	frame.age <- subframe[1,15]
-	frame.median <- median(subframe[,16])
+	frame.counts <- length(subframe[,16])
+	if (frame.counts < 20) {
+	    frame.median <- NA
+	} else {
+		frame.median <- median(subframe[,16])
+	}
 	data.frame(frame.cluster, frame.age, frame.median)
 	})
 split.stats <- split.stats[,c(2:4)]
@@ -226,7 +251,6 @@ heatmap.2(pvals, main="Deviation From Mean Utr Length", notecol="black", Colv="N
 cexRow=3, margins=c(9,30), density.info="none", trace="none", col=viridis.palette, lhei=c(1,10), 
 breaks=pval.breaks, dendrogram="row", cexCol=3)
 dev.off()
-
 
 ## Generates a heatmap of subclusters by ages, colored on the rows by parent clusters.
 data1 <- data[!is.na(data$cluster),]
@@ -268,7 +292,7 @@ dev.off()
 neuronal.clusters <- c('Cholinergic_neurons', 'Inhibitory_interneurons', 'Granule_neurons',
 'Sensory_neurons', 'Excitatory_neurons', 'Inhibitory_neurons', 'Inhibitory_neuron_progenitors',
 'Postmitotic_premature_neurons')
-blood.clusters <- c('Primitive_erythroid_lineage', 'Definitive_erythroid_lineage', 'White_blood_cells')
+blood.clusters <- c('Primitive_erythroid_lineage', 'Definitive_erythroid_lineage', 'Neutrophils', 'White_blood_cells')
 split.stats <- ldply(split.data, function(sublist){
 	subframe <- data.frame(sublist)
 	frame.median <- median(subframe[,16])
@@ -287,7 +311,7 @@ split.stats <- ldply(split.data, function(sublist){
 	data.frame(frame.median, frame.counts, frame.color, frame.age)
 	})
 split.medians <- split.stats$frame.median
-split.counts <- split.stats$frame.counts
+split.counts <- log10(split.stats$frame.counts)
 split.colors <- as.character(split.stats$frame.color)
 split.ages <- split.stats$frame.age
 # Evaluates to 0.030
@@ -317,7 +341,7 @@ c.split.stats <- ldply(cluster.split.data, function(sublist){
 adjusted.values = p.adjust(c.split.stats$frame.pvalue, method="bonferroni")
 # Gives bonferroni-corrected values for each cluster.
 c.split.stats$adjusted.pvalue <-adjusted.values
-
+write.table(c.split.stats, file=paste0(dataset, "/cluster_heatmap_anova.tsv"), quote=FALSE, sep='\t', col.names=NA)
 
 ## Does the same as above with trajectory rows rather than cluster rows.
 traj.split.data <- split(data, data$trajectory, drop=TRUE)
@@ -331,6 +355,7 @@ t.split.stats <- ldply(traj.split.data, function(sublist){
 	})
 adjusted.values = p.adjust(t.split.stats$frame.pvalue, method="bonferroni")
 t.split.stats$adjusted.pvalue <-adjusted.values
+write.table(t.split.stats, file=paste0(dataset, "/traj_heatmap_anova.tsv"), quote=FALSE, sep='\t', col.names=NA)
 
 
 ## Generates 3D UMAP plots of our data.
@@ -343,6 +368,7 @@ umap.data$utr[umap.data$utr <= cutoff1] <- cutoff1
 umap.data$utr[umap.data$utr >= cutoff2] <- cutoff2
 ncmt <- umap.data[umap.data$traj=="Neural_crest_melanocytes_trajectory",]
 ncmt <- arrange(ncmt, age)
+ncmt <- ncmt[ncmt$umap1<1500,]
 ncmt$age <- as.character(ncmt$age)
 ntant <- umap.data[umap.data$traj=="Neural_tube_and_notochord_trajectory",]
 ntant <- arrange(ntant, age)
@@ -351,19 +377,20 @@ ht <- umap.data[umap.data$traj=="Haematopoiesis_trajectory",]
 ht <- arrange(ht, age)
 ht$age <- as.character(ht$age)
 # Plots Neural Crest and Melanocytes. The initial axis and marker settings remain the same for each plot.
-axis <- list(zeroline=FALSE, showline=FALSE, showticklabels=FALSE, title="")
+axis <- list(zeroline=FALSE, showline=FALSE, showticklabels=FALSE, title="", showgrid=FALSE)
 markers <- list(size=2, color=~utr, colorscale='Viridis', showscale=TRUE)
 viridis.discrete <- c("#3b528bff", "#21918cff", "#5ec962ff", "#fde725ff", "#440154ff")
 # The camera (and therefore scene) setting, however, changes for each plot.
 # Our camera settings give the initial view we use for images in the publication, but the actual generated
 # files are manually manipulated 3d plots.
-camera <- list(eye=list(x=-1.8239782531134685, y=0.002762428594774473, z=-1.1664457557715224),
-			   up=list(x=0, y=0, z=1))
+camera <- list(eye=list(x=-1.670061125143662, y=-1.213551691987196, z=0.6524477980336022),
+			   up=list(x=-0.10432230768447087, y=0.5785027391444107, z=0.8089817284227132))
 scene <- list(xaxis=axis, yaxis=axis, zaxis=axis, camera=camera)
 plot <- plotly::plot_ly(ncmt, x=~umap1, y=~umap2, z=~umap3, marker=markers, text=~utr) %>% 
         layout(scene=scene) %>%
         add_markers()
-htmlwidgets::saveWidget(as_widget(plot), "Neural_crest_melanocytes_trajectory_umap.html")
+widget.path <- paste0(working.path, "/", dataset, "/figures/Neural_crest_PNS_trajectory_umap.html")
+htmlwidgets::saveWidget(as_widget(plot), widget.path)
 # Plots Neural Tube and Notochord.
 camera <- list(eye=list(x=-1.5037249407487514, y=1.3862811297253783, z=-0.7103069279807821),
 	           up=list(x=-0.15862394497834553, y=0.30850374208857667, z=0.93790398506289))
@@ -371,43 +398,60 @@ scene <- list(xaxis=axis, yaxis=axis, zaxis=axis, camera=camera)
 plot <- plotly::plot_ly(ntant, x=~umap1, y=~umap2, z=~umap3, marker=markers, text=~utr) %>% 
                 layout(scene=scene) %>%
                 add_markers()
-htmlwidgets::saveWidget(as_widget(plot), "Neural_tube_and_notochord_trajectory_umap.html")
+widget.path <- paste0(working.path, "/", dataset, "/figures/Neural_tube_and_notochord_trajectory_umap.html")
+htmlwidgets::saveWidget(as_widget(plot), widget.path)
 # Plots Hematopoiesis.
 camera <- list(eye=list(x=-0.7952917709395577, y=-1.000999029613577, z=1.7472870232988333))
 scene <- list(xaxis=axis, yaxis=axis, zaxis=axis, camera=camera)
 plot <- plotly::plot_ly(ht, x=~umap1, y=~umap2, z=~umap3, marker=markers, text=~utr) %>% 
         layout(scene=scene) %>%
         add_markers()
-htmlwidgets::saveWidget(as_widget(plot), "Haematopoiesis_trajectory_umap.html")
+widget.path <- paste0(working.path, "/", dataset, "/figures/Haematopoiesis_trajectory_umap.html")
+htmlwidgets::saveWidget(as_widget(plot), widget.path)
 
 
 
 ## Generates Unbinned 3D Umap plots of our data's ages.
-umap <- data.frame(data$rumap1, data$rumap2, data$rumap3, data$age, data$trajectory)
-names(umap) <- c("umap1", "umap2", "umap3", "age", "traj")
+umap <- data.frame(data$rumap1, data$rumap2, data$rumap3, data$age, data$trajectory, data$utr)
+names(umap) <- c("umap1", "umap2", "umap3", "age", "traj", "utr")
+cutoff1 <- -50
+cutoff2 <- 50
+umap$utr[umap$utr <= cutoff1] <- cutoff1
+umap$utr[umap$utr >= cutoff2] <- cutoff2
 ncmt <- umap[umap$traj=="Neural_crest_melanocytes_trajectory",]
 ncmt <- ncmt[complete.cases(ncmt),]
+ncmt <- ncmt[ncmt$umap1<1.5,]
 ntant <- umap[umap$traj=="Neural_tube_and_notochord_trajectory",]
 ntant <- ntant[complete.cases(ntant),]
 ht <- umap[umap$traj=="Haematopoiesis_trajectory",]
-ht <- ht[complete.cases(ht)]
+ht <- ht[complete.cases(ht),]
 # Resets our markers to have a discrete colorscale and smaller points. Our axes remain the same.
-markers <- list(size=1, color=~age, colorscale='Plotly', showscale=TRUE)
+markers <- list(size=1, color=~age, showscale=TRUE, colorscale="Viridis")
 # Neural Crest Melanocytes
+camera <- list(eye=list(x=-1.670061125143662, y=-1.213551691987196, z=0.6524477980336022),
+			   up=list(x=-0.10432230768447087, y=0.5785027391444107, z=0.8089817284227132))
+scene <- list(xaxis=axis, yaxis=axis, zaxis=axis, camera=camera)
 plot <- plotly::plot_ly(ncmt, x=~umap1, y=~umap2, z=~umap3, marker=markers, text=~age) %>% 
         layout(scene=scene) %>%
         add_markers()
-orca(plot, paste0(dataset, "/figures/Neural_crest_melanocytes_trajectory_age.png"))
+widget.path <- paste0(working.path, "/", dataset, "/figures/Neural_crest_PNS_trajectory_age.html")
+htmlwidgets::saveWidget(as_widget(plot), widget.path)
 # Neural Tube and Notochord
+camera <- list(eye=list(x=-1.5037249407487514, y=1.3862811297253783, z=-0.7103069279807821),
+	           up=list(x=-0.15862394497834553, y=0.30850374208857667, z=0.93790398506289))
+scene <- list(xaxis=axis, yaxis=axis, zaxis=axis, camera=camera)
 plot <- plotly::plot_ly(ntant, x=~umap1, y=~umap2, z=~umap3, marker=markers, text=~age) %>% 
         layout(scene=scene) %>%
         add_markers()
-orca(plot, paste0(dataset, "/figures/Neural_tube_and_notochord_trajectory_age.png"))
+widget.path <- paste0(working.path, "/", dataset, "/figures/Neural_tube_and_notochord_trajectory_age.html")
+htmlwidgets::saveWidget(as_widget(plot), widget.path)
 # Haematopoiesis
+camera <- list(eye=list(x=-0.7952917709395577, y=-1.000999029613577, z=1.7472870232988333))
+scene <- list(xaxis=axis, yaxis=axis, zaxis=axis, camera=camera)
 plot <- plotly::plot_ly(ht, x=~umap1, y=~umap2, z=~umap3, marker=markers, text=~age) %>% 
         layout(scene=scene) %>%
         add_markers()
-orca(plot, paste0(dataset, "/figures/Haematopoiesis_trajectory_age.png"))
-
+widget.path <- paste0(working.path, "/", dataset, "/figures/Haematopoiesis_trajectory_age.html")
+htmlwidgets::saveWidget(as_widget(plot), widget.path)
 
 stop()
