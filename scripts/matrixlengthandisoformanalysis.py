@@ -18,6 +18,8 @@ import sys
 import time
 # noinspection PyUnresolvedReferences
 from matplotlib_venn import venn3
+from matplotlib.lines import Line2D
+from statsmodels.stats.multitest import fdrcorrection
 
 OVERLAP_PATH = "data/overlapfiles/"
 TRANSCRIPT_FILE_PATH = "detected_genes_parsedoverlaps_1transcript_per_gene_OKIDs.txt"
@@ -319,13 +321,11 @@ def generate_gene_data_dict(gene_data_path):
 def parallel_job_submission(protocol):
     """Will submit an analysis of analysis_type to a folder named output_folder.
     The job script name is irrelevant, but set by this program internally for consistency."""
-
     sub_script = SCRIPT_PATH + protocol + "_matrixlengthandisoformanalysis.py"
     job_script = SCRIPT_PATH + "job_" + protocol + "_" + PAS_DATASET + ".sh"
     output_folder = PAS_DATASET + "/" + protocol + "/"
     if not os.path.exists(output_folder):
         os.mkdir(output_folder)
-
     print("Generating job file...")
     # This bash script submits a parallel array of jobs that each run our subscript on one file in an input folder.
     # The subscript is called with two arguments: the path to its target file and the PAS dataset to use.
@@ -339,7 +339,6 @@ def parallel_job_submission(protocol):
                  'utr_overlaps_${num}.bed.gz ' + PAS_DATASET + ' ' + os.getcwd() + '/\n']
         job_file.writelines(lines)
     print("Job file generated.")
-
     overlap_count = len(glob2.glob(OVERLAP_PATH + '*.bed.gz'))
     if len(os.listdir(output_folder)) == 0:
         print("Submitting job array...")
@@ -364,7 +363,6 @@ def parallel_job_submission(protocol):
         if error:
             print("Job submission error:")
             print(error.decode())
-
         # Waits until we have as many output files as input files.
         file_check_flag = True
         while file_check_flag:
@@ -438,8 +436,10 @@ def generate_pas_files():
             # If no 3'UTR exon overlaps are found, the PAS is discarded.
             if no_exon_overlap:
                 continue
-
-            pas_data_dict[chrom][strand][gene].append([locus, total_length, dataset])
+            if locus in [pas_data[0] for pas_data in pas_data_dict[chrom][strand][gene]]:
+                continue
+            else:
+                pas_data_dict[chrom][strand][gene].append([locus, total_length, dataset, 0])
 
     # This is used as-is the function mapping script. It will be modified after function mapping is completed.
     with open(pas_path + "pas_data_dict.pkl", 'wb') as pas_file_out:
@@ -1029,8 +1029,6 @@ def analyze_pas_usage():
     highly_expressed_transcripts_out.close()
 
     parallel_job_submission("pasmatrix")
-    
-    exit("Don't forget to remove this exit statement.")
 
     # Loads in our cell data so we have a reference for which cells exist in the dataset and writes our cell metadata in
     # a way that will work for monocle3 differential analysis of certain cell features.
@@ -1118,8 +1116,172 @@ def analyze_pas_usage():
     gene_matrices_out.close()
 
 
-def differential_pas_test():
-    """"""
+def generate_icdfs_age(transcript_info):
+    """Creates inverse cumulative density function plots of gene body coverage, representing relative usage of each PAS.
+    Multiple ICDFs are plotted per figure, divided by ages for individual genes with significant differences between PAS
+    usages of each age's cells. Input data is in the form of a list of transcripts to be plotted."""
+
+    with open('names_by_id.pkl', 'rb') as names_in:
+        names = pkl.load(names_in)
+        transcript_names = names[1]
+        short_names = names[4]
+    with open(PAS_DATASET + '/transcript_frame_dict.pkl', 'rb') as transcript_frames_in:
+        transcript_frame_dict = pkl.load(transcript_frames_in)
+    with open(PAS_DATASET + '/pas_data_by_tx.pkl', 'rb') as transcript_sites_in:
+        transcript_site_dict = pkl.load(transcript_sites_in)
+    with open(PAS_DATASET + '/transcript_sig_dict.pkl', 'rb') as transcript_sig_in:
+        transcript_sig_dict = pkl.load(transcript_sig_in)
+
+    icdf_path = PAS_DATASET + '/figures/icdfs/'
+
+    # viridis = cm.get_cmap('viridis')
+    colors = ["#440154", "#3B528B", "#21918C", "#00A15B", "#00EC0A"]
+
+    # Transcript_ids_total requires sublists of [transcript id, dataset designation, line designations].
+    flag = False
+    for transcript_id, transcript in enumerate(transcript_info):
+        fig = plt.figure(figsize=(10, 5))
+        ax = fig.add_subplot(111)
+        raw_sites = [data[1] for data in transcript_site_dict[transcript]]
+        if raw_sites == sorted(raw_sites):
+            flag = True
+        # Adds two extra sites: a '0' site to represent the start of our ICDF and an 'end' site to represent the end.
+        sites = np.asarray(sorted(raw_sites))
+        sites = np.append(np.asarray([0]), sites)
+        sites = np.append(sites, np.asarray(sites[-1] + 1))
+        transcript_designation_directory = str(icdf_path) + "ages/"
+        # Makes a color map based on the number of subdivisions the icdf needs.
+        if not os.path.exists(transcript_designation_directory):
+            os.mkdir(transcript_designation_directory)
+        for sub_idx, sub in enumerate(AGES):
+            if flag:
+                entries = transcript_frame_dict[transcript]['ages'][:, sub_idx]
+            else:
+                entries = transcript_frame_dict[transcript]['ages'][:, sub_idx][::-1]
+            # Calculates the proportion of each PAS site, then makes a cumulative density function of them.
+            entries = entries / sum(entries)
+            cumulative = np.cumsum(entries)
+            cumulative = np.append(np.asarray([0]), cumulative)
+            # Inverts the cumulative density function
+            function = [cumulative[-1] - n for n in cumulative]
+            # Makes a flat starting segment between the '0' site and our first PAS.
+            function = np.append(function[0], function)
+            ax.step(sites, function, color=colors[sub_idx], label=sub.replace("_", " "))
+        for pas in transcript_sig_dict[transcript]["ages_pas_chisquare"]:
+            pas_pvalue = np.round(transcript_sig_dict[transcript]["ages_pas_chisquare"][pas], 3)
+            ax.text(x=pas, y=1.0, alpha=0.7, color='#334f8d', s=str(pas_pvalue))
+        gene_name = short_names[transcript_names.index(transcript)]
+        plt.title(gene_name + " PAS Usage")
+        # Only plots legend if there is a manageable number of clusters.
+        ax.legend(frameon=False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        figure_path = transcript_designation_directory + str(transcript_id) + "_" + gene_name + ".pdf"
+        fig.savefig(figure_path, bbox_inches='tight')
+        plt.close('all')
+        flag = False
+
+
+def plot_clusters(ax, flag, transcript_frame_dict, transcript, sites, clusters, color):
+    """Plotting subfunction for generate_icdfs_clusters.
+    Plots each subset of clusters passed to it with a different color.
+    Inherits the same ax, flag, transcript_frame_dict, transcript, transcript_designation, and sites every time."""
+    for sub_idx, sub in enumerate(CELL_TYPES):
+        if sub not in clusters:
+            continue
+        if flag:
+            entries = transcript_frame_dict[transcript]['clusters'][:, sub_idx]
+        else:
+            entries = transcript_frame_dict[transcript]['clusters'][:, sub_idx][::-1]
+        # Calculates the proportion of each PAS site, then makes a cumulative density function of them.
+        entries = entries / sum(entries)
+        cumulative = np.cumsum(entries)
+        cumulative = np.append(np.asarray([0]), cumulative)
+        # Inverts the cumulative density function
+        function = [cumulative[-1] - n for n in cumulative]
+        # Makes a flat starting segment between the '0' site and our first PAS.
+        function = np.append(function[0], function)
+        ax.step(sites, function, color=color, label=sub)
+
+
+def generate_icdfs_clusters(transcript_info):
+    """Creates inverse cumulative density function plots of gene body coverage, representing relative usage of each PAS.
+    Multiple ICDFs are plotted per figure, divided by clusters for individual genes with significant differences between
+    PAS usages of each cluster's cells. Input data is in the form of a list of transcripts to be plotted."""
+
+    with open('names_by_id.pkl', 'rb') as names_in:
+        names = pkl.load(names_in)
+        transcript_names = names[1]
+        short_names = names[4]
+    with open(PAS_DATASET + '/transcript_frame_dict.pkl', 'rb') as transcript_frames_in:
+        transcript_frame_dict = pkl.load(transcript_frames_in)
+    with open(PAS_DATASET + '/pas_data_by_tx.pkl', 'rb') as transcript_sites_in:
+        transcript_site_dict = pkl.load(transcript_sites_in)
+    with open(PAS_DATASET + '/transcript_sig_dict.pkl', 'rb') as transcript_sig_in:
+        transcript_sig_dict = pkl.load(transcript_sig_in)
+
+    icdf_path = PAS_DATASET + '/figures/icdfs/'
+
+    # These are the four principle cell type (row) clusters from our cell type-by-gene heatmap.
+    clusters_1 = ['Lens', 'Neutrophils', 'Cholinergic_neurons', 'Inhibitory_interneurons', 'Granule_neurons',
+                  'Sensory_neurons', 'Excitatory_neurons', 'Inhibitory_neurons', 'Inhibitory_neuron_progenitors',
+                  'Postmitotic_premature_neurons']
+    clusters_2 = ['Cardiac_muscle_lineages', 'Stromal_cells', 'Hepatocytes', 'White_blood_cells',
+                  'Definitive_erythroid_lineage', 'Primitive_erythroid_lineage', 'Myocytes', 'Osteoblasts',
+                  'Endothelial_cells', 'Megakaryocytes']
+    clusters_3 = ['Melanocytes', 'Connective_tissue_progenitors', 'Schwann_cell_precursor', 'Epithelial_cells',
+                  'Intermediate_Mesoderm', 'Limb_mesenchyme', 'Chondroctye_progenitors', 'Chondrocytes_and_osteoblasts',
+                  'Jaw_and_tooth_progenitors']
+    clusters_4 = ['Notochord_cells', 'Neural_progenitor_cells', 'Early_mesenchyme', 'Neural_Tube',
+                  'Oligodendrocyte_Progenitors', 'Isthmic_organizer_cells', 'Radial_glia', 'Ependymal_cell',
+                  'Premature_oligodendrocyte']
+    colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA"]
+
+    # Draws a certain gene (transcript_data = transcript_info[IDX]) and highlights clusters.
+    flag = False
+    for transcript_id, transcript in enumerate(transcript_info):
+        fig = plt.figure(figsize=(10, 5))
+        ax = fig.add_subplot(111)
+        raw_sites = [data[1] for data in transcript_site_dict[transcript]]
+        if raw_sites == sorted(raw_sites):
+            flag = True
+
+        # Adds two extra sites: a '0' site to represent the start of our ICDF and an 'end' site to represent the end.
+        sites = np.asarray(sorted(raw_sites))
+        sites = np.append(np.asarray([0]), sites)
+        sites = np.append(sites, np.asarray(sites[-1] + 1))
+        transcript_designation_directory = str(icdf_path) + "clusters/"
+        if not os.path.exists(transcript_designation_directory):
+            os.mkdir(transcript_designation_directory)
+
+        # Draws non-neuronal, non-lens clusters in gray.
+        for clusters, color in zip([clusters_1, clusters_2, clusters_3, clusters_4], colors):
+            plot_clusters(ax, flag, transcript_frame_dict, transcript, sites, clusters, color)
+
+        # Adds annotations to significant polyAsites
+        for pas in transcript_sig_dict[transcript]["clusters_pas_chisquare"]:
+            ax.axvline(x=pas, linestyle='dashed', alpha=0.5)
+            pas_pvalue = np.round(transcript_sig_dict[transcript]["clusters_pas_chisquare"][pas], 3)
+            ax.text(x=pas, y=1.0, alpha=0.7, color='#334f8d', s=str(pas_pvalue))
+
+        # Cleanup, legend, and plotting.
+        gene_name = short_names[transcript_names.index(transcript)]
+        plt.title(gene_name + " PAS Usage")
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        figure_path = transcript_designation_directory + str(transcript_id) + "_" + gene_name + ".png"
+        fig.savefig(figure_path, bbox_inches='tight')
+        plt.close('all')
+        flag = False
+
+
+def differential_pas_test(transcript_sig_path):
+    """Totals PAS usage data in different cell clusters and ages for each transcript and analyzes chi-square statistics
+    for each against expected values based on expression levels in each category."""
 
     # Re-orients our PAS data to fit with the new analysis. The other structure is faster for other analyses so we
     # maintain it
@@ -1138,6 +1300,7 @@ def differential_pas_test():
         with open(refactored_pas_dict_path, 'wb') as pas_file_out:
             pkl.dump(pas_data_by_transcript, pas_file_out)
 
+    # Initiates empty frames to hold data for each PAS in each transcript at each age or cell cluster.
     transcript_frame_dict = {}
     for transcript in pas_data_by_transcript:
         transcript_frame_dict[transcript] = {}
@@ -1145,10 +1308,15 @@ def differential_pas_test():
         transcript_frame_dict[transcript]['clusters'] = np.zeros((len(pas_data_by_transcript[transcript]), 38))
 
     with open("names_by_id.pkl", 'rb') as names_in:
-        cell_names = pkl.load(names_in)[0]
+        names = pkl.load(names_in)
+        cell_names = names[0]
+        transcript_names = names[1]
     with open("cell_data_dict.pkl", 'rb') as cell_data_in:
         cell_data_dict = pkl.load(cell_data_in)
+    with open(PAS_DATASET + '/gene_average_dict.pkl', 'rb') as gene_averages_in:
+        gene_average_dict = pkl.load(gene_averages_in)
 
+    # Makes a quick reference dictionary to attach our cell IDS to age and cluster categories.
     cell_categories = {}
     for cell_idx, cell_name in enumerate(cell_names):
         cell_data = cell_data_dict[cell_name]
@@ -1164,15 +1332,20 @@ def differential_pas_test():
             cluster_idx = CELL_TYPES.index(cell_cluster)
         cell_categories[cell_idx] = [age_idx, cluster_idx]
 
+    # Totals PAS count data for each transcript and cordons them by cell type and age.
     pas_matrix_count = 0
+    transcript_sig_dict = {}
     for pas_matrix_file_path in glob2.glob(PAS_DATASET + '/pasmatrix/*.pkl'):
         with open(pas_matrix_file_path, 'rb') as pas_matrix_file:
             pas_matrix = pkl.load(pas_matrix_file)
             for transcript in pas_matrix:
                 transcript_data = pas_matrix[transcript]
                 for coords in transcript_data:
-                    # Skips data header.
-                    if coords == 'pas':
+                    # Skips data header, adds PAS indices to the transcript's data.
+                    if coords == 'pas' and transcript not in transcript_sig_dict:
+                        transcript_sig_dict[transcript] = {'sites': transcript_data['pas']}
+                        continue
+                    elif coords == 'pas':
                         continue
                     cell_idxs = cell_categories[coords[0]]
                     pas_idx = coords[1]
@@ -1182,16 +1355,401 @@ def differential_pas_test():
                     if age_idx == 'NA' or cluster_idx == 'NA':
                         continue
                     transcript_frame_dict[transcript]['ages'][(pas_idx, age_idx)] += count
-                    transcript_frame_dict[transcript]['clusters'][(pas_idx, age_idx)] += count
+                    transcript_frame_dict[transcript]['clusters'][(pas_idx, cluster_idx)] += count
         pas_matrix_count += 1
         print("PAS matrix " + str(pas_matrix_count) + " processed.")
 
+    with open(PAS_DATASET + '/transcript_frame_dict.pkl', 'wb') as transcript_frames_out:
+        pkl.dump(transcript_frame_dict, transcript_frames_out)
+
+    # Builds a couple arrays of p-values matching our PAS indices between ages and clusters for each transcript.
+    age_transcripts = []
+    cluster_transcripts = []
+    dominance_ages = []
+    dominance_clusters = []
+    min_counts_ages = []
+    min_counts_clusters = []
     for transcript in transcript_frame_dict:
-        age_frame = transcript_frame_dict[transcript]['ages']
-        age_expr = np.sum(age_frame, axis=0) / np.sum(age_frame)
-        pas_expr = np.sum(age_frame, axis=1)
-        expected_age_frame = np.multiply.outer(pas_expr, age_expr)
-        age_chs = sps.chisquare(age_frame.T, expected_age_frame.T)
+        # This means it got no reads in any of the overlapped data.
+        if transcript not in transcript_sig_dict or transcript not in pas_data_by_transcript:
+            continue
+        pas_data = pas_data_by_transcript[transcript]
+        age_frame_raw = transcript_frame_dict[transcript]['ages']
+        # Removes unexpressed PAS.
+        age_frame = age_frame_raw[~np.all(age_frame_raw == 0, axis=1)]
+        # Calculates expression level of each age, and determines minimum expression for later statistical analysis.
+        age_expr = np.sum(age_frame, axis=0)
+        age_min = min(age_expr)
+        min_counts_ages.append(age_min)
+        # This is the proportional dominance of the most expressed PAS.
+        if age_min >= 100:
+            pas_expr = [pas for pas in np.sum(age_frame, axis=1) if pas != 0]
+            age_prop = age_expr / np.sum(age_frame)
+            # Calculates entropy value of each age for later statistical analysis.
+            prop_frame = age_frame / age_expr
+            age_dominance = min(np.max(prop_frame, axis=0))
+            dominance_ages.append(age_dominance)
+            if age_dominance <= 0.95:
+                age_transcripts.append(transcript)
+                transcript_sig_dict[transcript]['age_expression'] = age_expr
+                age_entropy = sps.entropy(prop_frame)
+                transcript_sig_dict[transcript]['age_entropy'] = age_entropy
+                # Makes an expected data frame based on overall expression level at each age and each PAS
+                expected_age_frame = np.multiply.outer(pas_expr, age_prop)
+                age_chs = sps.chisquare(age_frame.T, expected_age_frame.T, axis=None)[1]
+                transcript_sig_dict[transcript]['ages'] = age_chs
+                # Records chi-square values of each expressed PAS on this transcript
+                transcript_sig_dict[transcript]['ages_pas_chisquare'] = {}
+                for pas_idx, pas_row in enumerate(age_frame_raw):
+                    pas_expr = np.sum(pas_row)
+                    if pas_expr < (np.sum(age_frame) / 10):
+                        continue
+                    expected_pas_row = pas_expr * age_prop
+                    pas_chs = sps.chisquare(pas_row, expected_pas_row)[1]
+                    transcript_sig_dict[transcript]['ages_pas_chisquare'][pas_data[pas_idx][1]] = pas_chs
+                by_age_chs = sps.chisquare(age_frame.T, expected_age_frame.T, axis=1)[1]
+                transcript_sig_dict[transcript]['ages_age_chisquare'] = by_age_chs
+        cluster_frame_raw = transcript_frame_dict[transcript]['clusters']
+        # Removes unexpressed PAS.
+        cluster_frame = cluster_frame_raw[~np.all(cluster_frame_raw == 0, axis=1)]
+        # Calculates expression level of each cluster, and determines minimum expression for later statistical analysis.
+        cluster_expr = np.sum(cluster_frame, axis=0)
+        cluster_min = min(cluster_expr)
+        min_counts_clusters.append(cluster_min)
+        if cluster_min >= 20:
+            cluster_prop = cluster_expr / np.sum(cluster_frame)
+            # Calculates entropy value of each cluster for later statistical analysis.
+            prop_frame = cluster_frame / cluster_expr
+            cluster_dominance = min(np.max(prop_frame, axis=0))
+            dominance_clusters.append(cluster_dominance)
+            if cluster_dominance <= 0.95:
+                cluster_transcripts.append(transcript)
+                transcript_sig_dict[transcript]['cluster_expression'] = cluster_expr
+                cluster_entropy = sps.entropy(prop_frame)
+                transcript_sig_dict[transcript]['cluster_entropy'] = cluster_entropy
+                pas_expr = [pas for pas in np.sum(cluster_frame, axis=1) if pas != 0]
+                # Makes an expected data frame based on overall expression level in each cluster and each PAS
+                expected_cluster_frame = np.multiply.outer(pas_expr, cluster_prop)
+                cluster_chs = sps.chisquare(cluster_frame.T, expected_cluster_frame.T, axis=None)[1]
+                transcript_sig_dict[transcript]['clusters'] = cluster_chs
+                # Records chi-square values for each expressed PAS on this transcript
+                transcript_sig_dict[transcript]['clusters_pas_chisquare'] = {}
+                for pas_idx, pas_row in enumerate(cluster_frame_raw):
+                    pas_expr = np.sum(pas_row)
+                    if pas_expr < (np.sum(cluster_frame) / 10):
+                        continue
+                    expected_pas_row = pas_expr * cluster_prop
+                    pas_chs = sps.chisquare(pas_row, expected_pas_row)[1]
+                    transcript_sig_dict[transcript]['clusters_pas_chisquare'][pas_data[pas_idx][1]] = pas_chs
+                by_cluster_chs = sps.chisquare(cluster_frame.T, expected_cluster_frame.T, axis=1)[1]
+                transcript_sig_dict[transcript]['clusters_cluster_chisquare'] = by_cluster_chs
+
+    # Makes a plot of cluster and age dominance and counts
+    count_dom_hist_path = PAS_DATASET + '/figures/pas_counts_and_dominance.pdf'
+    fig, axs = plt.subplots(2, 2, figsize=(20, 15))
+    axs[0, 0].hist(dominance_ages, bins=50)
+    axs[0, 0].set_title("Age PAS Dominance")
+    axs[0, 1].hist(dominance_clusters, bins=50)
+    axs[0, 1].set_title("Cluster PAS Dominance")
+    log_bins = np.logspace(0, np.log10(100000), 50)
+    axs[1, 0].hist(min_counts_ages, bins=log_bins)
+    axs[1, 0].set_xscale('log')
+    axs[1, 0].set_title("Age Min Counts")
+    log_bins = np.logspace(0, np.log10(1000), 50)
+    axs[1, 1].hist(min_counts_clusters, bins=log_bins)
+    axs[1, 1].set_xscale('log')
+    axs[1, 1].set_title("Cluster Min Counts")
+    plt.subplots_adjust(hspace=0.5)
+    plt.savefig(count_dom_hist_path)
+    plt.close('all')
+
+    # Gathers p-values from transcripts with by-age data passing our filters and subjects them to FDR correction.
+    age_pvals = []
+    by_age_pvals = []
+    for transcript in age_transcripts:
+        age_pval = transcript_sig_dict[transcript]['ages']
+        age_pvals.append(age_pval)
+        by_age_pval = transcript_sig_dict[transcript]['ages_age_chisquare']
+        by_age_pvals += list(by_age_pval)
+    age_pvals = fdrcorrection(age_pvals)[1]
+    age_pvals_log = [-np.log10(pval) if pval != 0 else 300 for pval in age_pvals]
+    by_age_pvals = fdrcorrection(by_age_pvals)[1]
+    by_age_pvals_log = [-np.log10(pval) if pval != 0 else 300 for pval in by_age_pvals]
+
+    # Takes the top 1000 transcripts by post-FDR p-value
+    top_indices = sorted(range(len(age_pvals_log)), key=lambda i: age_pvals_log[i], reverse=True)[:1000]
+    top_transcripts = [age_transcripts[idx] for idx in top_indices]
+    top_transcript_ids = [transcript_names.index(transcript) for transcript in top_transcripts]
+
+    # Gathers p-values from transcripts with by-cluster data passing our filters and subjects them to FDR correction.
+    cluster_pvals = []
+    by_cluster_pvals = []
+    for transcript in cluster_transcripts:
+        cluster_pval = transcript_sig_dict[transcript]['clusters']
+        cluster_pvals.append(cluster_pval)
+        by_cluster_pval = transcript_sig_dict[transcript]['clusters_cluster_chisquare']
+        by_cluster_pvals += list(by_cluster_pval)
+    cluster_pvals = fdrcorrection(cluster_pvals)[1]
+    cluster_pvals_log = [-np.log10(pval) if pval != 0 else 300 for pval in cluster_pvals]
+    by_cluster_pvals = fdrcorrection(by_cluster_pvals)[1]
+    by_cluster_pvals_log = [-np.log10(pval) if pval != 0 else 300 for pval in by_cluster_pvals]
+
+    # Stores FDR-corrected p-values
+    for idx, transcript in enumerate(age_transcripts):
+        pval = age_pvals_log[idx]
+        transcript_sig_dict[transcript]['ages_fdr'] = pval
+    for idx, transcript in enumerate(cluster_transcripts):
+        pval = cluster_pvals_log[idx]
+        transcript_sig_dict[transcript]['clusters_fdr'] = pval
+
+    # Grabs our age arrays
+    with open(PAS_DATASET + '/gene_age_array.pkl', 'rb') as gene_arrays_in:
+        arrays = pkl.load(gene_arrays_in)
+        age_gene_array = arrays[0]
+
+    # Normalizes to expression level in each category.
+    age_array_means = np.mean(age_gene_array, axis=1)
+    age_gene_array = (age_gene_array.T - age_array_means).T
+
+    age_max_fc = []
+    for transcript in age_transcripts:
+        transcript_id = transcript_names.index(transcript)
+        transcript_row = age_gene_array[transcript_id]
+        abs_max = max(transcript_row, key=abs)
+        age_max_fc.append(abs_max)
+
+    # Grabs the maximum FC across clusters for each gene.
+    cluster_max_fc = []
+    for t_idx, transcript in enumerate(cluster_transcripts):
+        transcript_pas_counts = transcript_frame_dict[transcript]['clusters'].T
+        transcript_average = gene_average_dict[transcript_names.index(transcript)][0]
+        transcript_pas_lengths = [(pas_data[1] - transcript_average) for pas_data in pas_data_by_transcript[transcript]]
+        col_means = []
+        for sub_col in transcript_pas_counts:
+            col_total = 0
+            col_counts = 0
+            for r_idx, pas_count in enumerate(sub_col):
+                pas_total = pas_count * transcript_pas_lengths[r_idx]
+                col_total += pas_total
+                col_counts += pas_count
+            col_mean = col_total / col_counts
+            col_means.append(col_mean)
+        # Normalizes to cluster expression levels.
+        col_means = col_means - np.mean(col_means)
+        cluster_max_fc.append(max(col_means, key=abs))
+
+    # Separates out the log-pvals greater than 50 and FCs outside of +/-200.
+    volcano_fcs = []
+    volcano_pvals = []
+    volcano_c_fcs = []
+    volcano_c_pvals = []
+    for fc, pval in zip(age_max_fc, age_pvals_log):
+        if pval > 50 and np.abs(fc) > 200:
+            if fc < 0:
+                volcano_fcs.append(-200)
+            else:
+                volcano_fcs.append(200)
+            volcano_pvals.append(50)
+        elif pval > 50:
+            volcano_fcs.append(fc)
+            volcano_pvals.append(50)
+        elif np.abs(fc) > 200:
+            if fc < 0:
+                volcano_fcs.append(-200)
+            else:
+                volcano_fcs.append(200)
+            volcano_pvals.append(pval)
+    for fc, pval in zip(cluster_max_fc, cluster_pvals_log):
+        if pval > 50 and np.abs(fc) > 200:
+            if fc < 0:
+                volcano_c_fcs.append(-200)
+            else:
+                volcano_c_fcs.append(200)
+            volcano_c_pvals.append(50)
+        elif pval > 50:
+            volcano_c_fcs.append(fc)
+            volcano_c_pvals.append(50)
+        elif np.abs(fc) > 200:
+            if fc < 0:
+                volcano_c_fcs.append(-200)
+            else:
+                volcano_c_fcs.append(200)
+            volcano_c_pvals.append(pval)
+
+    volcano_path = PAS_DATASET + '/figures/pval_dev_volcano_200_age_cluster.pdf'
+    fig, axs = plt.subplots(2, 1, figsize=(20, 20))
+    axs[0].scatter(age_max_fc, age_pvals_log, s=0.5)
+    axs[0].scatter(volcano_fcs, volcano_pvals, s=0.5, c='red')
+    axs[0].set_xlim(left=-200, right=200)
+    axs[0].set_ylim(bottom=0, top=50)
+    axs[0].set_title("By-Gene Age Pvalue vs Fold Change")
+    axs[0].spines['top'].set_visible(False)
+    axs[0].spines['left'].set_visible(False)
+    axs[0].spines['right'].set_visible(False)
+    axs[0].spines['bottom'].set_visible(False)
+    axs[1].scatter(cluster_max_fc, cluster_pvals_log, s=0.5)
+    axs[1].scatter(volcano_c_fcs, volcano_c_pvals, s=0.5, c='red')
+    axs[1].set_xlim(left=-200, right=200)
+    axs[1].set_ylim(bottom=0, top=50)
+    axs[1].set_title("By-Gene Cluster Pvalue vs Fold Change")
+    axs[1].spines['top'].set_visible(False)
+    axs[1].spines['left'].set_visible(False)
+    axs[1].spines['right'].set_visible(False)
+    axs[1].spines['bottom'].set_visible(False)
+    plt.savefig(volcano_path)
+    plt.close('all')
+
+    sig_co = -np.log10(0.05)
+    sig_age_transcripts = [tx for idx, tx in enumerate(age_transcripts) if age_pvals_log[idx] > sig_co]
+    insig_age_transcripts = [tx for idx, tx in enumerate(age_transcripts) if age_pvals_log[idx] <= sig_co]
+    sig_cluster_transcripts = [tx for idx, tx in enumerate(cluster_transcripts) if cluster_pvals_log[idx] > sig_co]
+    insig_cluster_transcripts = [tx for idx, tx in enumerate(cluster_transcripts) if cluster_pvals_log[idx] <= sig_co]
+
+    transcript_info = []
+    transcript_info += [[tx, 'ages', AGES] for tx in sig_age_transcripts[0:4]]
+    transcript_info += [[tx, 'ages', AGES] for tx in insig_age_transcripts[0:4]]
+    transcript_info += [[tx, 'clusters', CELL_TYPES] for tx in sig_cluster_transcripts[0:4]]
+    transcript_info += [[tx, 'clusters', CELL_TYPES] for tx in insig_cluster_transcripts[0:4]]
+
+    pval_hist_path = PAS_DATASET + '/figures/chisquare_corrected_pvalues.png'
+    fig, axs = plt.subplots(2, 1, figsize=(20, 20))
+    axs[0].hist(age_pvals_log, bins=int(max(age_pvals_log)))
+    axs[0].axvline(x=sig_co)
+    axs[0].set_title("Age Chisquare Corrected P-Values")
+    axs[1].hist(cluster_pvals_log, bins=int(max(cluster_pvals_log)))
+    axs[1].axvline(x=sig_co)
+    axs[1].set_title("Cluster Chisquare Corrected P-Values")
+    plt.savefig(pval_hist_path)
+    plt.close('all')
+
+    with open(transcript_sig_path, 'wb') as transcript_sig_out:
+        pkl.dump(transcript_sig_dict, transcript_sig_out)
+
+    age_entropy_array = np.zeros((len(sig_age_transcripts), len(AGES)))
+    cluster_entropy_array = np.zeros((len(sig_cluster_transcripts), len(CELL_TYPES)))
+
+    for sig_id, transcript in enumerate(sig_age_transcripts):
+        entropy_list = transcript_sig_dict[transcript]['age_entropy']
+        age_entropy_array[sig_id] = entropy_list - np.mean(entropy_list)
+    for sig_id, transcript in enumerate(sig_cluster_transcripts):
+        entropy_list = transcript_sig_dict[transcript]['cluster_entropy']
+        cluster_entropy_array[sig_id] = entropy_list - np.mean(entropy_list)
+
+    for coordinates, entry in np.ndenumerate(age_entropy_array):
+        if entry < -0.2:
+            age_entropy_array[coordinates] = -0.2
+        elif entry > 0.2:
+            age_entropy_array[coordinates] = 0.2
+    for coordinates, entry in np.ndenumerate(cluster_entropy_array):
+        if entry < -0.2:
+            cluster_entropy_array[coordinates] = -0.2
+        elif entry > 0.2:
+            cluster_entropy_array[coordinates] = 0.2
+
+    sig_age_ids = [transcript_names.index(transcript) for transcript in sig_age_transcripts]
+
+    age_array_cutoff = age_gene_array[sig_age_ids, ]
+    for coordinates, gene_age_entry in np.ndenumerate(age_array_cutoff):
+        if gene_age_entry < -100.0:
+            age_array_cutoff[coordinates] = -100.0
+        if gene_age_entry > 100.0:
+            age_array_cutoff[coordinates] = 100.0
+
+    a_heatmap_path = PAS_DATASET + '/figures/age_gene_heatmap_chisquared.pdf'
+    a_heatmap_frame = pd.DataFrame(age_array_cutoff, columns=["9.5", "10.5", "11.5", "12.5", "13.5"])
+    # Extracts the genes in the order they're clustered for our referencing.
+    a_dist = sch.distance.pdist(a_heatmap_frame, metric='correlation')
+    a_dist = np.asarray([1.1 if np.isnan(entry) else entry for entry in a_dist])
+    a_linkage = sch.linkage(a_dist, method='average')
+    # Plots based off of our pre-computed clustering technique.
+    a_sns_plot = sns.clustermap(a_heatmap_frame, yticklabels=False, col_cluster=False, cmap="viridis", figsize=(20, 20),
+                                row_linkage=a_linkage)
+    a_clustered_transcripts = [sig_age_transcripts[new_idx] for new_idx in a_sns_plot.dendrogram_row.reordered_ind]
+    # Used to remove the legend for our manual figure editing.
+    a_sns_plot.cax.set_visible(False)
+    a_hm = a_sns_plot.ax_heatmap.get_position()
+    a_sns_plot.ax_heatmap.set_position([a_hm.x0, a_hm.y0, a_hm.width * 0.25, a_hm.height])
+    a_sns_plot.savefig(a_heatmap_path)
+
+    ae_heatmap_path = PAS_DATASET + '/figures/age_gene_heatmap_entropy.pdf'
+    ae_heatmap_frame = pd.DataFrame(age_entropy_array, columns=["9.5", "10.5", "11.5", "12.5", "13.5"])
+    ae_dist = sch.distance.pdist(ae_heatmap_frame, metric='correlation')
+    ae_dist = np.asarray([1.1 if np.isnan(entry) else entry for entry in ae_dist])
+    ae_linkage = sch.linkage(ae_dist, method='average')
+    # Extracts the genes in the order they're clustered for our referencing.
+    # Plots based off of our pre-computed clustering technique.
+    ae_sns_plot = sns.clustermap(ae_heatmap_frame, yticklabels=False, col_cluster=False, cmap="viridis",
+                                 figsize=(20, 20), row_linkage=ae_linkage)
+    ae_clustered_transcripts = [sig_age_transcripts[new_idx] for new_idx in ae_sns_plot.dendrogram_row.reordered_ind]
+    # Used to remove the legend for our manual figure editing.
+    ae_hm = ae_sns_plot.ax_heatmap.get_position()
+    ae_sns_plot.ax_heatmap.set_position([ae_hm.x0, ae_hm.y0, ae_hm.width * 0.25, ae_hm.height])
+    ae_sns_plot.savefig(ae_heatmap_path)
+    plt.close('all')
+
+    generate_icdfs_age(a_clustered_transcripts)
+
+    c_gene_array_cutoff = np.zeros((len(sig_cluster_transcripts), len(CELL_TYPES)))
+    for t_idx, transcript in enumerate(sig_cluster_transcripts):
+        transcript_pas_counts = transcript_frame_dict[transcript]['clusters'].T
+        transcript_average = gene_average_dict[transcript_names.index(transcript)][0]
+        transcript_pas_lengths = [(pas_data[1] - transcript_average) for pas_data in pas_data_by_transcript[transcript]]
+        col_means = []
+        for sub_col in transcript_pas_counts:
+            col_total = 0
+            col_counts = 0
+            for r_idx, pas_count in enumerate(sub_col):
+                pas_total = pas_count * transcript_pas_lengths[r_idx]
+                col_total += pas_total
+                col_counts += pas_count
+            col_mean = col_total / col_counts
+            col_means.append(col_mean)
+        # Normalizes to cluster expression levels.
+        col_means = col_means - np.mean(col_means)
+        for idx, mean in enumerate(col_means):
+            if mean < -50:
+                col_means[idx] = -50
+            elif mean > 50:
+                col_means[idx] = 50
+        c_gene_array_cutoff[t_idx] = col_means
+
+    c_heatmap_path = PAS_DATASET + "/figures/cluster_gene_heatmap_chisquared.pdf"
+    c_heatmap_frame = pd.DataFrame(c_gene_array_cutoff,
+                                   columns=[entry.replace('_', ' ') for entry in CELL_TYPES]).transpose()
+    r_dist = sch.distance.pdist(c_heatmap_frame, metric='correlation')
+    r_dist = np.asarray([1.1 if np.isnan(entry) else entry for entry in r_dist])
+    r_linkage = sch.linkage(r_dist, method='average')
+    c_dist = sch.distance.pdist(c_heatmap_frame.transpose(), metric='correlation')
+    c_linkage = sch.linkage(c_dist, method='average')
+    c_sns_plot = sns.clustermap(c_heatmap_frame, cmap="viridis", xticklabels=False, figsize=(10, 10),
+                                row_linkage=r_linkage, col_linkage=c_linkage)
+    c_clustered_transcripts = [sig_cluster_transcripts[new_idx] for new_idx in c_sns_plot.dendrogram_col.reordered_ind]
+    c_sns_plot.cax.set_visible(False)
+    c_hm = c_sns_plot.ax_heatmap.get_position()
+    c_sns_plot.ax_heatmap.set_position([c_hm.x0, c_hm.y0, c_hm.width * 4, c_hm.height])
+    c_den = c_sns_plot.ax_col_dendrogram.get_position()
+    c_sns_plot.ax_col_dendrogram.set_position([c_den.x0, c_den.y0, c_den.width * 4, c_den.height])
+    c_sns_plot.savefig(c_heatmap_path)
+
+    ce_heatmap_path = PAS_DATASET + "/figures/cluster_gene_heatmap_entropy.pdf"
+    ce_heatmap_frame = pd.DataFrame(cluster_entropy_array,
+                                    columns=[entry.replace('_', ' ') for entry in CELL_TYPES]).transpose()
+    re_dist = sch.distance.pdist(ce_heatmap_frame, metric='correlation')
+    re_dist = np.asarray([1.1 if np.isnan(entry) else entry for entry in re_dist])
+    re_linkage = sch.linkage(re_dist, method='average')
+    ce_dist = sch.distance.pdist(ce_heatmap_frame.transpose(), metric='correlation')
+    ce_linkage = sch.linkage(ce_dist, method='average')
+    ce_sns_plot = sns.clustermap(ce_heatmap_frame, cmap="viridis", xticklabels=False, figsize=(10, 10),
+                                 row_linkage=re_linkage, col_linkage=ce_linkage)
+    ce_clustered_transcripts = [sig_cluster_transcripts[idx] for idx in ce_sns_plot.dendrogram_col.reordered_ind]
+    ce_hm = ce_sns_plot.ax_heatmap.get_position()
+    ce_sns_plot.ax_heatmap.set_position([ce_hm.x0, ce_hm.y0, ce_hm.width * 4, ce_hm.height])
+    ce_den = ce_sns_plot.ax_col_dendrogram.get_position()
+    ce_sns_plot.ax_col_dendrogram.set_position([ce_den.x0, ce_den.y0, ce_den.width * 4, ce_den.height])
+    ce_sns_plot.savefig(ce_heatmap_path)
+    plt.close('all')
+
+    generate_icdfs_clusters(c_clustered_transcripts)
 
 
 def count_transcripts(transcript_count_path):
@@ -1342,7 +1900,6 @@ def generate_icdfs(icdf_path, clustered_gene_ids, c_clustered_gene_ids_1, c_clus
 
     with open("names_by_id.pkl", 'rb') as names_in:
         names = pkl.load(names_in)
-        transcript_names = names[1]
     with open('trans_to_gene.txt', 'rt') as shorthand_in:
         reader = csv.reader(shorthand_in, delimiter='\t')
         short_names = []
@@ -1357,8 +1914,6 @@ def generate_icdfs(icdf_path, clustered_gene_ids, c_clustered_gene_ids_1, c_clus
         age_count_array = arrays[1]
         cluster_gene_array = arrays[3]
         cluster_count_array = arrays[4]
-    with open(PAS_DATASET + '/pas_data_dict.pkl', 'rb') as pas_data_in:
-        pas_data_dict = pkl.load(pas_data_in)
     with open(PAS_DATASET + "/gene_average_dict.pkl", 'rb') as gene_averages_in:
         gene_average_dict = pkl.load(gene_averages_in)
 
@@ -1425,16 +1980,6 @@ def generate_icdfs(icdf_path, clustered_gene_ids, c_clustered_gene_ids_1, c_clus
 
     n_gene_array_cutoff = neuron_gene_array[n_gene_ids_cutoff, ]
 
-    # Old bugfix.
-    # count = 0
-    # n_gene_ids_cutoff_new = []
-    # for id in n_gene_ids_cutoff:
-    #     transcript = t_names_old[id]
-    #     if transcript not in t_names_new:
-    #         count += 1
-    #     else:
-    #         n_gene_ids_cutoff_new.append(id)
-
     # Constrains data to -100 to 100 range to eliminate outliers which will throw off analysis, then plots a heatmap.
     # This isn't done in the usual heatmap generation script as the arrays it references we use for icdf generation.
     for n_coordinates, n_gene_age_entry in np.ndenumerate(n_gene_array_cutoff):
@@ -1461,116 +2006,7 @@ def generate_icdfs(icdf_path, clustered_gene_ids, c_clustered_gene_ids_1, c_clus
     # Adds the gene ids important to neuron development to the transcript ids list.
     transcript_ids_total += [[transcript_id, "neuron_dev", neuron_clusters] for transcript_id in n_clustered_gene_ids]
 
-    # Scans our PAS annotations for each transcript, then builds it a list of PAS site coordinates.
-    transcript_site_dict = {}
-    transcript_frame_dict = {}
-    for transcript_id, transcript_data in enumerate(transcript_ids_total):
-        transcript = transcript_names[transcript_data[0]]
-        for chromosome in pas_data_dict:
-            for strand in pas_data_dict[chromosome]:
-                if transcript in pas_data_dict[chromosome][strand]:
-                    if strand == "+":
-                        transcript_site_dict[transcript_id] = \
-                            [entry[1] for entry in pas_data_dict[chromosome][strand][transcript]]
-                    else:
-                        transcript_site_dict[transcript_id] = \
-                            [entry[1] for entry in pas_data_dict[chromosome][strand][transcript]][::-1]
-        # This builds an empty numpy array to put our data into, with rows corresponding to PAS isoforms
-        # and columns corresponding to whatever subdivisions we're splitting the ICDF by.
-        # We reference the transcript frame dict and site dict by internal indexing, but other objects by global
-        # transcript/gene indexing. This is so we can build multiple frames across different axes for the same
-        # transcript.
-        transcript_frame_dict[transcript_id] = \
-            np.zeros((len(transcript_site_dict[transcript_id]), len(transcript_data[2])))
-
-    # Counts the occurrences of each PAS isoform at each subdivision, making an array for each transcript.
-    file_count = 0
-    for file_path in glob2.glob(PAS_DATASET + '/raw/*.pkl'):
-        with open(file_path, 'rb') as pf:
-            pas_usage_dict = pkl.load(pf)
-            for transcript_id, transcript_data in enumerate(transcript_ids_total):
-                if transcript_data[0] not in pas_usage_dict:
-                    continue
-                transcript_subdict = pas_usage_dict[transcript_data[0]][1]
-                for sub_idx, sub in enumerate(transcript_data[2]):
-                    if sub not in transcript_subdict:
-                        continue
-                    else:
-                        for site in transcript_subdict[sub]:
-                            transcript_sites = transcript_site_dict[transcript_id]
-                            # If the PAS isoform isn't in our annotated sites (which means that this cell expressed
-                            # the gene multiple times with different PAS usage, so we averaged the PAS coordinates),
-                            # it attaches the data point to the nearest annotated site.
-                            if site not in transcript_sites:
-                                site = min(transcript_sites, key=lambda x: abs(x - site))
-                            site_idx = transcript_sites.index(int(site))
-                            transcript_frame_dict[transcript_id][(site_idx, sub_idx)] += 1
-        file_count += 1
-        print("PAS-by-age data file " + str(file_count) + " processed.")
-
-    # viridis = cm.get_cmap('viridis')
-    cluster_cm = plt.cm.get_cmap('nipy_spectral')
-    # if not os.path.exists(icdf_path):
-    #     os.mkdir(icdf_path)
-    colors_age = ["#440154", "#3B528B", "#21918C", "#00A15B", "#00EC0A"]
-    colors_neurons = [cluster_cm(x) for x in np.linspace(0, 1, 10)]
-    colors_cluster = [cluster_cm(x) for x in np.linspace(0, 1, 38)]
-
-    # Transcript_ids_total requires sublists of [transcript id, dataset designation, line designations].
-    for transcript_id, transcript_data in enumerate(transcript_ids_total):
-        fig = plt.figure(figsize=(10, 5))
-        ax = fig.add_subplot(111)
-        # Adds two extra sites: a '0' site to represent the start of our ICDF and an 'end' site to represent the end.
-        sites = np.append(np.asarray([0]), np.asarray(transcript_site_dict[transcript_id]))
-        sites = np.append(sites, np.asarray(sites[-1] + 1))
-        transcript_designation = transcript_data[1]
-        transcript_designation_directory = str(icdf_path) + transcript_designation + "/"
-        # Makes a color map based on the number of subdivisions the icdf needs.
-        # colors =
-        if len(transcript_data[2]) == 5:
-            colors = colors_age
-        elif len(transcript_data[2]) == 10:
-            colors = colors_neurons
-        else:
-            colors = colors_cluster
-        if not os.path.exists(transcript_designation_directory):
-            os.mkdir(transcript_designation_directory)
-        for sub_idx, sub in enumerate(transcript_data[2]):
-            entries = transcript_frame_dict[transcript_id][:, sub_idx]
-            # Calculates the proportion of each PAS site, then makes a cumulative density function of them.
-            entries = entries / sum(entries)
-            cumulative = np.cumsum(entries)
-            cumulative = np.append(np.asarray([0]), cumulative)
-            # Inverts the cumulative density function
-            function = [cumulative[-1] - n for n in cumulative]
-            # Makes a flat starting segment between the '0' site and our first PAS.
-            function = np.append(function[0], function)
-            ax.step(sites, function, color=colors[sub_idx], label=sub.replace("_", " "))
-        gene_name = short_names[transcript_data[0]]
-        plt.title(gene_name + " PAS Usage")
-        # Only plots legend if there is a manageable number of clusters.
-        if len(transcript_data[2]) < 10:
-            ax.legend(frameon=False)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['bottom'].set_visible(False)
-        ax.spines['left'].set_visible(False)
-        if transcript_designation == "age_dev_cov":
-            figure_path = transcript_designation_directory + str(clustered_gene_ids.index(transcript_data[0])) + "." + \
-                          gene_name + ".png"
-        elif transcript_designation == "neuron_dev":
-            figure_path = transcript_designation_directory + str(n_clustered_gene_ids.index(transcript_data[0])) + "." \
-                          + gene_name + ".png"
-        elif transcript_designation == "cluster_dev_1":
-            figure_path = transcript_designation_directory + str(c_clustered_gene_ids_1.index(transcript_data[0])) + \
-                          "." + gene_name + ".png"
-        elif transcript_designation == "cluster_dev_2":
-            figure_path = transcript_designation_directory + str(c_clustered_gene_ids_2.index(transcript_data[0])) + \
-                          "." + gene_name + ".png"
-        else:
-            figure_path = transcript_designation_directory + gene_name + ".png"
-        fig.savefig(figure_path, bbox_inches='tight')
-        plt.close('all')
+    generate_icdfs_2(transcript_ids_total)
 
 
 def generate_heatmaps(heatmap_path):
@@ -1598,8 +2034,6 @@ def generate_heatmaps(heatmap_path):
     cell_gene_expression_out = PAS_DATASET + "/cell_gene_expressions.pkl"
     with open(cell_gene_expression_out, 'wb') as cell_gene_expression_file:
         pkl.dump([cell_counts, gene_counts], cell_gene_expression_file)
-    with open('names_by_id.pkl', 'rb') as names_in:
-        names = pkl.load(names_in)
 
     pl.hist(gene_counts, bins=np.logspace(np.log10(1), np.log10(1000000), 50))
     pl.gca().set_xscale("log")
@@ -2169,6 +2603,78 @@ def concatenate_matrices():
     print("Processed data concatenated.")
 
 
+def plot_rbp_heatmaps(age_tsv_path, cluster_tsv_path):
+    """Plots rbp expression data as heatmaps in the same style as our other gene maps."""
+
+    age_genexp_frame = pd.read_csv(age_tsv_path, sep='\t', index_col=0)
+    genes_agexp = age_genexp_frame.axes[0].tolist()
+    cluster_genexp_frame = pd.read_csv(cluster_tsv_path, sep='\t', index_col=0)
+    genes_clusterxp = cluster_genexp_frame.axes[0].tolist()
+    marked_genes = ["Elavl1", "Elavl2", "Elavl3", "Elavl4", "Celf1", "Celf2", "Celf3", "Celf4", "Celf5", "Celf6",
+                    "Nova1", "Nova2", "Rbfox1", "Rbfox2", "Rbfox3", "Hnrnpf", "Ptbp1"]
+
+    a_heatmap_path = PAS_DATASET + "/figures/age_genexp.png"
+    # Extracts the genes in the order they're clustered for our referencing.
+    a_dist = sch.distance.pdist(age_genexp_frame, metric='euclidean')
+    a_dist = np.asarray([1.1 if np.isnan(entry) else entry for entry in a_dist])
+    a_linkage = sch.linkage(a_dist, method='average')
+    # Plots based off of our pre-computed clustering technique.
+    a_sns_plot = sns.clustermap(age_genexp_frame, yticklabels=False, col_cluster=False, cmap="viridis",
+                                figsize=(20, 20),
+                                row_linkage=a_linkage, vmin=-1, vmax=1)
+    a_clustered_genes = [genes_agexp[new_idx] for new_idx in a_sns_plot.dendrogram_row.reordered_ind]
+    # Used to remove the legend for our manual figure editing.
+    a_sns_plot.cax.set_visible(False)
+    # a_sns_plot.ax_heatmap.set_position([a_hm.x0, a_hm.y0, a_hm.width * 0.25, a_hm.height])
+    a_sns_plot.savefig(a_heatmap_path)
+
+    a_label_frame = pd.DataFrame(0, index=np.arange(len(genes_agexp)), columns=AGES)
+    labeled_indices = []
+    for gene in marked_genes:
+        labeled_index = a_clustered_genes.index(gene)
+        labeled_indices.append(labeled_index)
+        a_label_frame.loc[labeled_index] = [1, 1, 1, 1, 1]
+
+    a_label_path = PAS_DATASET + "/figures/age_genexp_labels.pdf"
+    a_label_plot = sns.clustermap(a_label_frame, yticklabels=False, col_cluster=False, row_cluster=False,
+                                  figsize=(20, 20),
+                                  cmap="gray_r")
+    a_label_plot.savefig(a_label_path)
+
+    # For the cluster heatmap
+    c_heatmap_path = PAS_DATASET + "/figures/cluster_genexp.png"
+    # Extracts the genes in the order they're clustered for our referencing.
+    c_dist = sch.distance.pdist(cluster_genexp_frame, metric='correlation')
+    c_dist = np.asarray([1.1 if np.isnan(entry) else entry for entry in c_dist])
+    c_linkage = sch.linkage(c_dist, method='average')
+    r_dist = sch.distance.pdist(cluster_genexp_frame.transpose(), metric='correlation')
+    r_dist = np.asarray([1.1 if np.isnan(entry) else entry for entry in r_dist])
+    r_linkage = sch.linkage(r_dist, method='average')
+    # Plots based off of our pre-computed clustering technique.
+    c_sns_plot = sns.clustermap(cluster_genexp_frame, yticklabels=False, col_linkage=r_linkage, cmap="viridis",
+                                figsize=(20, 20),
+                                row_linkage=c_linkage, vmin=-1, vmax=1)
+    c_clustered_genes = [genes_clusterxp[new_idx] for new_idx in c_sns_plot.dendrogram_row.reordered_ind]
+    # Used to remove the legend for our manual figure editing.
+    c_sns_plot.cax.set_visible(False)
+    c_hm = c_sns_plot.ax_heatmap.get_position()
+    # a_sns_plot.ax_heatmap.set_position([a_hm.x0, a_hm.y0, a_hm.width * 0.25, a_hm.height])
+    c_sns_plot.savefig(c_heatmap_path)
+
+    c_label_frame = pd.DataFrame(0, index=np.arange(len(genes_clusterxp)), columns=CELL_TYPES)
+    c_labeled_indices = []
+    for gene in marked_genes:
+        labeled_index = c_clustered_genes.index(gene)
+        c_labeled_indices.append(labeled_index)
+        c_label_frame.loc[labeled_index] = [1] * 38
+
+    c_label_path = PAS_DATASET + "/figures/cluster_genexp_labels.pdf"
+    c_label_plot = sns.clustermap(c_label_frame, yticklabels=False, col_cluster=False, row_cluster=False,
+                                  figsize=(20, 20),
+                                  cmap="gray_r")
+    c_label_plot.savefig(c_label_path)
+
+
 def main():
     # This will be passed our current directory from the bash pipeline script.
     os.chdir(sys.argv[2])
@@ -2236,11 +2742,11 @@ def main():
         calculate_averages(gene_average_path)
 
     pas_matrix_path = PAS_DATASET + '/pas_matrices.h5'
-    #if os.path.exists(pas_matrix_path):
-    #    print("PAS expression data found.")
-    #else:
-    #    print("Analyzing pas usage...")
-    analyze_pas_usage()
+    if os.path.exists(pas_matrix_path):
+        print("PAS expression data found.")
+    else:
+        print("Analyzing pas usage...")
+        analyze_pas_usage()
 
     transcript_count_path = PAS_DATASET + "/transcript_counts_pasoverlaps.txt"
     if os.path.exists(transcript_count_path):
@@ -2307,4 +2813,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
