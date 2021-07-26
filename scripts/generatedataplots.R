@@ -1,3 +1,4 @@
+library(fmsb)
 library(ggplot2)
 library(gplots) 
 library(LSD)
@@ -140,6 +141,21 @@ print(cor(exp.data$baseline, exp.data$pas, method="pearson"))
 #	 scale_y_continuous(limits=c(0,0.5))
 # dreme.out.path.2 <- paste0(dataset, "/figures/dreme2_AAAAAA.pdf")
 # ggsave(filename=dreme.out.path.2, plot=a, width=5, height=2)
+
+
+## Generates scatterplots of UTR deviation values (based on trajectory) in relation to Jun's calculated pseudotime.
+split.data <- split(data, data$trajectory, drop=TRUE)
+split.stats <- ldply(split.data, function(sublist){
+	subframe <- data.frame(sublist)
+	frame.trajectory <- as.character(subframe[1,7])
+	subframe <- subframe[!is.na(subframe$pseudotime),]
+	traj.ptime.out.path <- paste0(dataset, "/figures/", frame.trajectory, "_pseudotime_utr.png")
+	png(traj.ptime.out.path)
+	heatscatter(subframe$pseudotime, subframe$trajectoryutr, main="", xlab="", ylab="")
+	title(main="Pseudotime vs UTR Deviation", xlab="Pseudotime", ylab="Deviation from trajectory mean UTR")
+	dev.off()
+	})
+
 
 
 ## Generates a dataframe of trajectory means by ages for our data.
@@ -366,6 +382,8 @@ cutoff1 <- -50
 cutoff2 <- 50
 umap.data$utr[umap.data$utr <= cutoff1] <- cutoff1
 umap.data$utr[umap.data$utr >= cutoff2] <- cutoff2
+# NOTE: This is mislabeled in the SOURCE DATA, not in the PAPER. This is actually the Neural crest PNS neuron trajectory.
+# Please do not email me about this.
 ncmt <- umap.data[umap.data$traj=="Neural_crest_melanocytes_trajectory",]
 ncmt <- arrange(ncmt, age)
 ncmt <- ncmt[ncmt$umap1<1500,]
