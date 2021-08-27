@@ -266,10 +266,11 @@ $pythonpath ${scriptpath}matrixlengthandisoformanalysis.py $dataset $PWD
 # It is faster to do this here than in the python script
 cat $dataset/tsv/*.tsv > $dataset/cell_data.tsv
 # This will submit 100 parallel jobs to analyze differential PAS usage.
-jobfile='/net/shendure/vol1/home/sereno/projects/scripts/pasanalysis_workflow.sh'
-sed -i "4s|.*|dataset=\"$dataset\"|" $jobfile
-sed -i "5s|.*|wd=\"$PWD\"|" $jobfile
-qsub -t 1-100 -tc 10 -N pasanalysis bash $jobfile
+# Notice: This fragment has been deprecated in favor of marking differential PAS inside of the python script.
+# jobfile='/net/shendure/vol1/home/sereno/projects/scripts/pasanalysis_workflow.sh'
+# sed -i "4s|.*|dataset=\"$dataset\"|" $jobfile
+# sed -i "5s|.*|wd=\"$PWD\"|" $jobfile
+# qsub -t 1-100 -tc 10 -N pasanalysis bash $jobfile
 
 # This R script generates data plots. Its output is detailed in the script.
 Rscript ${scriptpath}generatedataplots.R $dataset $PWD
